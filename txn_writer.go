@@ -30,10 +30,10 @@ type SafeWriter struct {
 
 // SafeWriterPayload represents the actions SafeWriter will execute when SafeWriter.Write is called.
 type SafeWriterPayload struct {
-	Manifest         *Manifest
-	Lock             *Lock
-	LockDiff         *LockDiff
-	ForceWriteVendor bool
+	Manifest    *Manifest
+	Lock        *Lock
+	LockDiff    *LockDiff
+	WriteVendor bool
 }
 
 func (payload *SafeWriterPayload) HasLock() bool {
@@ -45,10 +45,7 @@ func (payload *SafeWriterPayload) HasManifest() bool {
 }
 
 func (payload *SafeWriterPayload) HasVendor() bool {
-	// TODO(carolynvs) this can be calculated based on if we are writing the lock
-	// init -> switch to newlock
-	// ensure checks existence, why not move that into the prep?
-	return payload.ForceWriteVendor
+	return payload.WriteVendor
 }
 
 // LockDiff is the set of differences between an existing lock file and an updated lock file.
@@ -160,26 +157,23 @@ func (diff StringDiff) MarshalJSON() ([]byte, error) {
 //   and the vendor directory in the same way
 // - If the forceVendor param is true, then vendor/ will be unconditionally
 //   written out based on newLock if present, else lock, else error.
-func (sw *SafeWriter) Prepare(manifest *Manifest, lock *Lock, newLock *Lock, forceVendor bool) {
+func (sw *SafeWriter) Prepare(manifest *Manifest, oldLock *Lock, newLock *Lock, forceVendor bool) {
 	sw.Payload = &SafeWriterPayload{
-		Manifest:         manifest,
-		ForceWriteVendor: forceVendor,
+		Manifest: manifest,
 	}
 
-	if newLock != nil {
-		if lock == nil {
-			sw.Payload.Lock = newLock
-			sw.Payload.ForceWriteVendor = true
-		} else {
-			diff := diffLocks(lock, newLock)
-			if diff != nil {
-				sw.Payload.Lock = newLock
-				sw.Payload.LockDiff = diff
-				sw.Payload.ForceWriteVendor = true
-			}
-		}
-	} else if lock != nil {
-		sw.Payload.Lock = lock
+	if oldLock != nil && newLock != nil {
+		sw.Payload.LockDiff = diffLocks(oldLock, newLock)
+	}
+
+	if forceVendor || sw.Payload.LockDiff != nil {
+		sw.Payload.Lock = newLock
+		sw.Payload.WriteVendor = true
+	}
+
+	if oldLock == nil && newLock != nil {
+		sw.Payload.Lock = newLock
+		sw.Payload.WriteVendor = true
 	}
 }
 
@@ -358,12 +352,21 @@ func (sw *SafeWriter) PrintPreparedActions() error {
 	}
 
 	if sw.Payload.HasLock() {
-		fmt.Println("Would have written the following changes to lock.json:")
-		diff, err := sw.Payload.LockDiff.Format()
-		if err != nil {
-			return errors.Wrap(err, "ensure DryRun cannot serialize the lock diff")
+		if sw.Payload.LockDiff == nil {
+			fmt.Println("Would have written the following lock.json:")
+			l, err := sw.Payload.Lock.MarshalJSON()
+			if err != nil {
+				return errors.Wrap(err, "ensure DryRun cannot serialize lock")
+			}
+			fmt.Println(string(l))
+		} else {
+			fmt.Println("Would have written the following changes to lock.json:")
+			diff, err := sw.Payload.LockDiff.Format()
+			if err != nil {
+				return errors.Wrap(err, "ensure DryRun cannot serialize the lock diff")
+			}
+			fmt.Println(diff)
 		}
-		fmt.Println(diff)
 	}
 
 	if sw.Payload.HasVendor() {
